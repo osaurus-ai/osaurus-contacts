@@ -85,7 +85,7 @@ private var api: osr_plugin_api = {
         "id": "\(tool.name)",
         "description": "\(tool.description)",
         "parameters": \(tool.parameters),
-        "requirements": [],
+        "requirements": ["contacts"],
         "permission_policy": "ask"
       }
       """
