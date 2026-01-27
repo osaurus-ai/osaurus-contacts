@@ -94,8 +94,12 @@ private var api: osr_plugin_api = {
     let manifest = """
       {
         "plugin_id": "osaurus.contacts",
-        "version": "0.1.0",
+        "name": "Contacts",
         "description": "Access and manage contacts on macOS",
+        "license": "MIT",
+        "authors": ["Dinoki Labs"],
+        "min_macos": "13.0",
+        "min_osaurus": "0.5.0",
         "capabilities": {
           "tools": [
             \(toolsList)
