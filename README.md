@@ -6,6 +6,7 @@ An Osaurus plugin for managing Contacts on macOS.
 
 - `get_all_numbers`: Get all contacts and their phone numbers
 - `find_number`: Find phone numbers for a contact by name
+- `find_contact_by_name`: Find full contact details (phone, email) for a contact by name
 - `find_contact_by_phone`: Find a contact name by their phone number
 
 ## Development

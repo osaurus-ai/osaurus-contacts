@@ -88,3 +88,33 @@ struct FindContactByPhoneTool {
     }
   }
 }
+
+struct FindContactByNameTool {
+  let name = "find_contact_by_name"
+  let description = "Find full contact details (phone, email) for a contact by name"
+  let parameters =
+    "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Name to search for\"}},\"required\":[\"name\"]}"
+
+  let manager: ContactsManager
+
+  func run(args: String) -> String {
+    struct Args: Decodable {
+      let name: String
+    }
+
+    guard let data = args.data(using: .utf8),
+      let input = try? JSONDecoder().decode(Args.self, from: data)
+    else {
+      return "{\"error\": \"Invalid arguments\"}"
+    }
+
+    do {
+      let contacts = try manager.findContactByName(name: input.name)
+      let data = try JSONEncoder().encode(contacts)
+      return String(data: data, encoding: .utf8) ?? "[]"
+    } catch {
+      return "{\"error\": \"\(error.localizedDescription)\"}"
+    }
+  }
+}
+
