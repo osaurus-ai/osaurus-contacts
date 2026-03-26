@@ -11,6 +11,7 @@ protocol Tool {
 extension GetAllNumbersTool: Tool {}
 extension FindNumberTool: Tool {}
 extension FindContactByPhoneTool: Tool {}
+extension FindContactByNameTool: Tool {}
 
 // MARK: - C ABI surface
 
@@ -46,6 +47,7 @@ private class PluginContext {
       GetAllNumbersTool(manager: manager),
       FindNumberTool(manager: manager),
       FindContactByPhoneTool(manager: manager),
+      FindContactByNameTool(manager: manager),
     ]
     return Dictionary(uniqueKeysWithValues: list.map { ($0.name, $0) })
   }()

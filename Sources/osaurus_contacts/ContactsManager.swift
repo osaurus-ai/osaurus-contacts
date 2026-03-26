@@ -1,8 +1,25 @@
 import Contacts
 import Foundation
 
+struct LabeledValue: Codable {
+  let label: String
+  let value: String
+}
+
+struct ContactInfo: Codable {
+  let name: String
+  let phoneNumbers: [LabeledValue]
+  let emails: [LabeledValue]
+}
+
 class ContactsManager {
   private let store = CNContactStore()
+
+  // Helper to normalize labels (e.g., "_$!<Home>!$_" -> "home")
+  private func normalizeLabel(_ label: String?) -> String {
+    guard let label = label else { return "other" }
+    return CNLabeledValue<NSString>.localizedString(forLabel: label).lowercased()
+  }
 
   // Helper to ensure we have access
   private func ensureAccess() throws {
@@ -72,45 +89,70 @@ class ContactsManager {
   }
 
   func findNumber(name: String) throws -> [String] {
+    let contacts = try findContactByName(name: name)
+    return contacts.flatMap { $0.phoneNumbers.map { $0.value } }
+  }
+
+  func findContactByName(name: String) throws -> [ContactInfo] {
     try ensureAccess()
 
-    // Try exact match first using predicate (fast)
-    let predicate = CNContact.predicateForContacts(matchingName: name)
-    let keys = [CNContactPhoneNumbersKey] as [CNKeyDescriptor]
+    let keys = [
+      CNContactGivenNameKey, CNContactFamilyNameKey, CNContactPhoneNumbersKey,
+      CNContactEmailAddressesKey,
+    ] as [CNKeyDescriptor]
 
-    var allPhones: [String] = []
+    // exact match using predicate
+    let predicate = CNContact.predicateForContacts(matchingName: name)
+    var results: [ContactInfo] = []
 
     do {
       let contacts = try store.unifiedContacts(matching: predicate, keysToFetch: keys)
       for contact in contacts {
-        allPhones.append(contentsOf: contact.phoneNumbers.map { $0.value.stringValue })
+        let fullName = [contact.givenName, contact.familyName].filter { !$0.isEmpty }.joined(
+          separator: " ")
+        results.append(
+          ContactInfo(
+            name: fullName,
+            phoneNumbers: contact.phoneNumbers.map {
+              LabeledValue(label: self.normalizeLabel($0.label), value: $0.value.stringValue)
+            },
+            emails: contact.emailAddresses.map {
+              LabeledValue(label: self.normalizeLabel($0.label), value: $0.value as String)
+            }
+          ))
       }
     } catch {
-      // Ignore error and fall back to fuzzy search
+      // ignore error and fall back
     }
 
-    if !allPhones.isEmpty {
-      return allPhones
+    if !results.isEmpty {
+      return results
     }
 
-    // Fallback: Fuzzy search (iterate all)
-    let allContacts = try getAllNumbers(limit: 5000)
-
+    // fuzzy search (iterate all)
     let searchName = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    let request = CNContactFetchRequest(keysToFetch: keys)
 
-    // Strategy 1: Exact match case-insensitive
-    if let match = allContacts.keys.first(where: { $0.lowercased() == searchName }) {
-      return allContacts[match] ?? []
+    try store.enumerateContacts(with: request) { contact, _ in
+      let fullName = [contact.givenName, contact.familyName].filter { !$0.isEmpty }.joined(
+        separator: " ")
+      let lowerFullName = fullName.lowercased()
+
+      if lowerFullName.contains(searchName) || searchName.contains(lowerFullName) {
+        results.append(
+          ContactInfo(
+            name: fullName,
+            phoneNumbers: contact.phoneNumbers.map {
+              LabeledValue(label: self.normalizeLabel($0.label), value: $0.value.stringValue)
+            },
+            emails: contact.emailAddresses.map {
+              LabeledValue(label: self.normalizeLabel($0.label), value: $0.value as String)
+            }
+          ))
+      }
     }
 
-    // Strategy 2: Contains
-    if let match = allContacts.keys.first(where: {
-      $0.lowercased().contains(searchName) || searchName.contains($0.lowercased())
-    }) {
-      return allContacts[match] ?? []
-    }
-
-    return []
+    return results
   }
 
   func findContactByPhone(phone: String) throws -> String? {
