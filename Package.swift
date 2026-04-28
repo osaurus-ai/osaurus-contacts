@@ -11,6 +11,11 @@ let package = Package(
         .target(
             name: "osaurus_contacts",
             path: "Sources/osaurus_contacts"
+        ),
+        .testTarget(
+            name: "osaurus_contactsTests",
+            dependencies: ["osaurus_contacts"],
+            path: "Tests/osaurus_contactsTests"
         )
     ]
 )
