@@ -1,5 +1,53 @@
 import Foundation
 
+// MARK: - Manifest
+
+// File-scope manifest literal. Tool entries use `"id"` (the host-required key)
+// and must stay in sync with the tools registered in `PluginContext`.
+let contactsManifestJSON = """
+  {
+    "plugin_id": "osaurus.contacts",
+    "name": "Contacts",
+    "description": "Access and manage contacts on macOS",
+    "license": "MIT",
+    "authors": ["Dinoki Labs"],
+    "min_macos": "13.0",
+    "min_osaurus": "0.5.0",
+    "capabilities": {
+      "tools": [
+        {
+          "id": "find_contact_by_name",
+          "description": "Find full contact details (phone, email) for a contact by name",
+          "parameters": {"type":"object","properties":{"name":{"type":"string","description":"Name to search for"}},"required":["name"]},
+          "requirements": ["contacts"],
+          "permission_policy": "ask"
+        },
+        {
+          "id": "find_contact_by_phone",
+          "description": "Find a contact name by their phone number",
+          "parameters": {"type":"object","properties":{"phoneNumber":{"type":"string","description":"Phone number to search for"}},"required":["phoneNumber"]},
+          "requirements": ["contacts"],
+          "permission_policy": "ask"
+        },
+        {
+          "id": "find_number",
+          "description": "Find phone numbers for a contact by name",
+          "parameters": {"type":"object","properties":{"name":{"type":"string","description":"Name to search for"}},"required":["name"]},
+          "requirements": ["contacts"],
+          "permission_policy": "ask"
+        },
+        {
+          "id": "get_all_numbers",
+          "description": "Get all contacts and their phone numbers",
+          "parameters": {"type":"object","properties":{"limit":{"type":"integer","description":"Max number of contacts to return (default 1000)"}},"required":[]},
+          "requirements": ["contacts"],
+          "permission_policy": "ask"
+        }
+      ]
+    }
+  }
+  """
+
 // MARK: - Protocol
 protocol Tool {
   var name: String { get }
@@ -79,37 +127,8 @@ private var api: osr_plugin_api = {
 
   api.get_manifest = { ctxPtr in
     guard let ctxPtr = ctxPtr else { return nil }
-    let ctx = Unmanaged<PluginContext>.fromOpaque(ctxPtr).takeUnretainedValue()
-
-    let toolsList = ctx.tools.values.sorted(by: { $0.name < $1.name }).map { tool in
-      """
-      {
-        "id": "\(tool.name)",
-        "description": "\(tool.description)",
-        "parameters": \(tool.parameters),
-        "requirements": ["contacts"],
-        "permission_policy": "ask"
-      }
-      """
-    }.joined(separator: ",")
-
-    let manifest = """
-      {
-        "plugin_id": "osaurus.contacts",
-        "name": "Contacts",
-        "description": "Access and manage contacts on macOS",
-        "license": "MIT",
-        "authors": ["Dinoki Labs"],
-        "min_macos": "13.0",
-        "min_osaurus": "0.5.0",
-        "capabilities": {
-          "tools": [
-            \(toolsList)
-          ]
-        }
-      }
-      """
-    return makeCString(manifest)
+    _ = Unmanaged<PluginContext>.fromOpaque(ctxPtr).takeUnretainedValue()
+    return makeCString(contactsManifestJSON)
   }
 
   api.invoke = { ctxPtr, typePtr, idPtr, payloadPtr in
@@ -131,7 +150,8 @@ private var api: osr_plugin_api = {
       }
     }
 
-    return makeCString("{\"error\": \"Unknown capability or tool\"}")
+    return makeCString(
+      Envelope.failure(.notFound, "Unknown capability or tool: \(type)/\(id)"))
   }
 
   return api
