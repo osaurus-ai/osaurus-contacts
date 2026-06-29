@@ -1,6 +1,10 @@
 import Contacts
 import Foundation
 
+enum ContactsError: Error {
+  case permissionDenied(String)
+}
+
 struct LabeledValue: Codable {
   let label: String
   let value: String
@@ -44,18 +48,12 @@ class ContactsManager {
         throw error
       }
       if !granted {
-        throw NSError(
-          domain: "ContactsManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Access denied"]
-        )
+        throw ContactsError.permissionDenied("Contacts access denied")
       }
     case .denied, .restricted:
-      throw NSError(
-        domain: "ContactsManager", code: 1,
-        userInfo: [NSLocalizedDescriptionKey: "Access denied or restricted"])
+      throw ContactsError.permissionDenied("Contacts access denied or restricted")
     @unknown default:
-      throw NSError(
-        domain: "ContactsManager", code: 1,
-        userInfo: [NSLocalizedDescriptionKey: "Unknown authorization status"])
+      throw ContactsError.permissionDenied("Unknown Contacts authorization status")
     }
   }
 
