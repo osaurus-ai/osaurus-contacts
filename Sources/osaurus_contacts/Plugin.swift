@@ -8,6 +8,7 @@ let contactsManifestJSON = """
   {
     "plugin_id": "osaurus.contacts",
     "name": "Contacts",
+    "version": "1.0.4",
     "description": "Access and manage contacts on macOS",
     "license": "MIT",
     "authors": ["Dinoki Labs"],
