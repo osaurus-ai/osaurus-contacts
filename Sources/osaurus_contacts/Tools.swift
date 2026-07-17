@@ -1,4 +1,5 @@
 import Foundation
+import OsaurusPluginKit
 
 // Maps a thrown error to a canonical failure envelope.
 // Contacts permission failures are non-retryable `permission_denied`;
