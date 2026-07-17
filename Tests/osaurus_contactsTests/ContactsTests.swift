@@ -48,10 +48,11 @@ final class ContactsTests: XCTestCase {
 
   func testDefaultRetryablePerKind() throws {
     let expectations: [(Envelope.Kind, String, Bool)] = [
-      (.invalidArgs, "invalid_args", true),
+      (.invalidArgs, "invalid_args", false),
       (.executionError, "execution_error", true),
       (.notFound, "not_found", false),
-      (.unavailable, "unavailable", true),
+      (.permissionDenied, "permission_denied", false),
+      (.timeout, "timeout", true),
     ]
 
     for (kind, rawKind, retryable) in expectations {
@@ -71,11 +72,11 @@ final class ContactsTests: XCTestCase {
     XCTAssertEqual(obj["message"] as? String, nasty)
   }
 
-  func testUnavailableCanOverrideRetryable() throws {
-    let json = Envelope.failure(.unavailable, "denied", retryable: false)
+  func testExplicitRetryableOverride() throws {
+    let json = Envelope.failure(.executionError, "flaky", retryable: false)
     let data = try XCTUnwrap(json.data(using: .utf8))
     let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-    XCTAssertEqual(obj["kind"] as? String, "unavailable")
+    XCTAssertEqual(obj["kind"] as? String, "execution_error")
     XCTAssertEqual(obj["retryable"] as? Bool, false)
   }
 }

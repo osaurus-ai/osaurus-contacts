@@ -1,13 +1,20 @@
 import Foundation
 
 // Maps a thrown error to a canonical failure envelope.
-// Contacts permission failures are non-retryable `unavailable`; everything
-// else is treated as a retryable `execution_error`.
+// Contacts permission failures are non-retryable `permission_denied`;
+// permission-prompt timeouts are `timeout`; everything else is treated as a
+// retryable `execution_error`.
 func contactsFailure(_ error: Error) -> String {
-  if case let ContactsError.permissionDenied(message) = error {
-    return Envelope.failure(.unavailable, message, retryable: false)
+  switch error {
+  case let ContactsError.permissionDenied(message):
+    return Envelope.failure(.permissionDenied, message)
+  case let ContactsError.permissionTimeout(message):
+    return Envelope.failure(.timeout, message)
+  case let ContactsError.searchFailed(message):
+    return Envelope.failure(.executionError, message)
+  default:
+    return Envelope.failure(.executionError, error.localizedDescription)
   }
-  return Envelope.failure(.executionError, error.localizedDescription)
 }
 
 struct GetAllNumbersTool {
@@ -23,8 +30,22 @@ struct GetAllNumbersTool {
       let limit: Int?
     }
 
-    let limit =
-      (try? JSONDecoder().decode(Args.self, from: args.data(using: .utf8) ?? Data()))?.limit ?? 1000
+    // An empty payload means "no arguments"; anything else must be valid JSON
+    // instead of being silently treated as defaults.
+    var requestedLimit: Int? = nil
+    if !args.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      guard let data = args.data(using: .utf8),
+        let input = try? JSONDecoder().decode(Args.self, from: data)
+      else {
+        return Envelope.failure(.invalidArgs, "Invalid arguments: expected a JSON object")
+      }
+      requestedLimit = input.limit
+    }
+
+    let limit = requestedLimit ?? 1000
+    guard limit > 0 else {
+      return Envelope.failure(.invalidArgs, "limit must be a positive integer, got \(limit)")
+    }
 
     do {
       let contacts = try manager.getAllNumbers(limit: limit)
@@ -57,6 +78,10 @@ struct FindNumberTool {
       let input = try? JSONDecoder().decode(Args.self, from: data)
     else {
       return Envelope.failure(.invalidArgs, "Missing or invalid 'name' argument")
+    }
+
+    guard !input.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      return Envelope.failure(.invalidArgs, "'name' must not be empty")
     }
 
     do {
@@ -95,6 +120,10 @@ struct FindContactByPhoneTool {
       return Envelope.failure(.invalidArgs, "Missing or invalid 'phoneNumber' argument")
     }
 
+    guard !Matching.normalizeDigits(input.phoneNumber).isEmpty else {
+      return Envelope.failure(.invalidArgs, "'phoneNumber' must contain at least one digit")
+    }
+
     do {
       guard let name = try manager.findContactByPhone(phone: input.phoneNumber) else {
         return Envelope.failure(.notFound, "No contact found for phone number '\(input.phoneNumber)'")
@@ -129,6 +158,10 @@ struct FindContactByNameTool {
       let input = try? JSONDecoder().decode(Args.self, from: data)
     else {
       return Envelope.failure(.invalidArgs, "Missing or invalid 'name' argument")
+    }
+
+    guard !input.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      return Envelope.failure(.invalidArgs, "'name' must not be empty")
     }
 
     do {
