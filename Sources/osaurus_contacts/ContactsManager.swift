@@ -3,6 +3,8 @@ import Foundation
 
 enum ContactsError: Error {
   case permissionDenied(String)
+  case permissionTimeout(String)
+  case searchFailed(String)
 }
 
 struct LabeledValue: Codable {
@@ -42,7 +44,9 @@ class ContactsManager {
         semaphore.signal()
       }
 
-      semaphore.wait()
+      if semaphore.wait(timeout: .now() + 30) == .timedOut {
+        throw ContactsError.permissionTimeout("Timed out waiting for Contacts permission")
+      }
 
       if let error = error {
         throw error
@@ -60,15 +64,14 @@ class ContactsManager {
   func getAllNumbers(limit: Int = 1000) throws -> [String: [String]] {
     try ensureAccess()
 
-    var results: [String: [String]] = [:]
-    var count = 0
+    var entries: [(name: String, phones: [String])] = []
 
     let keys =
       [CNContactGivenNameKey, CNContactFamilyNameKey, CNContactPhoneNumbersKey] as [CNKeyDescriptor]
     let request = CNContactFetchRequest(keysToFetch: keys)
 
     try store.enumerateContacts(with: request) { contact, stop in
-      if count >= limit {
+      if entries.count >= limit {
         stop.pointee = true
         return
       }
@@ -78,12 +81,11 @@ class ContactsManager {
       let phones = contact.phoneNumbers.map { $0.value.stringValue }
 
       if !name.isEmpty && !phones.isEmpty {
-        results[name] = phones
-        count += 1
+        entries.append((name: name, phones: phones))
       }
     }
 
-    return results
+    return Matching.nameKeyedResults(entries)
   }
 
   func findNumber(name: String) throws -> [String] {
@@ -102,6 +104,7 @@ class ContactsManager {
     // exact match using predicate
     let predicate = CNContact.predicateForContacts(matchingName: name)
     var results: [ContactInfo] = []
+    var exactSearchError: Error? = nil
 
     do {
       let contacts = try store.unifiedContacts(matching: predicate, keysToFetch: keys)
@@ -120,7 +123,8 @@ class ContactsManager {
           ))
       }
     } catch {
-      // ignore error and fall back
+      // Remember the error; if the fallback below also fails, both are reported.
+      exactSearchError = error
     }
 
     if !results.isEmpty {
@@ -131,23 +135,32 @@ class ContactsManager {
     let searchName = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
     let request = CNContactFetchRequest(keysToFetch: keys)
 
-    try store.enumerateContacts(with: request) { contact, _ in
-      let fullName = [contact.givenName, contact.familyName].filter { !$0.isEmpty }.joined(
-        separator: " ")
-      let lowerFullName = fullName.lowercased()
+    do {
+      try store.enumerateContacts(with: request) { contact, _ in
+        let fullName = [contact.givenName, contact.familyName].filter { !$0.isEmpty }.joined(
+          separator: " ")
+        let lowerFullName = fullName.lowercased()
 
-      if lowerFullName.contains(searchName) || searchName.contains(lowerFullName) {
-        results.append(
-          ContactInfo(
-            name: fullName,
-            phoneNumbers: contact.phoneNumbers.map {
-              LabeledValue(label: self.normalizeLabel($0.label), value: $0.value.stringValue)
-            },
-            emails: contact.emailAddresses.map {
-              LabeledValue(label: self.normalizeLabel($0.label), value: $0.value as String)
-            }
-          ))
+        if lowerFullName.contains(searchName) || searchName.contains(lowerFullName) {
+          results.append(
+            ContactInfo(
+              name: fullName,
+              phoneNumbers: contact.phoneNumbers.map {
+                LabeledValue(label: self.normalizeLabel($0.label), value: $0.value.stringValue)
+              },
+              emails: contact.emailAddresses.map {
+                LabeledValue(label: self.normalizeLabel($0.label), value: $0.value as String)
+              }
+            ))
+        }
       }
+    } catch {
+      if let exactSearchError {
+        throw ContactsError.searchFailed(
+          "Exact search failed: \(exactSearchError.localizedDescription); fallback search failed: \(error.localizedDescription)"
+        )
+      }
+      throw error
     }
 
     return results
@@ -156,9 +169,7 @@ class ContactsManager {
   func findContactByPhone(phone: String) throws -> String? {
     try ensureAccess()
 
-    // Normalize search phone
-    let searchPhone = phone.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
-    if searchPhone.isEmpty { return nil }
+    if Matching.normalizeDigits(phone).isEmpty { return nil }
 
     let keys =
       [CNContactGivenNameKey, CNContactFamilyNameKey, CNContactPhoneNumbersKey] as [CNKeyDescriptor]
@@ -168,13 +179,9 @@ class ContactsManager {
 
     try store.enumerateContacts(with: request) { contact, stop in
       for phoneNumber in contact.phoneNumbers {
-        let num = phoneNumber.value.stringValue.components(
-          separatedBy: CharacterSet.decimalDigits.inverted
-        ).joined()
-        // Check for match
-        // We check if the search number is contained in the contact number or vice versa
-        // to handle cases with/without country codes etc.
-        if !num.isEmpty && (num.contains(searchPhone) || searchPhone.contains(num)) {
+        // Digits-only comparison requiring full equality or a >=7 digit suffix
+        // match, so short numbers cannot match by raw substring containment.
+        if Matching.phoneMatches(query: phone, candidate: phoneNumber.value.stringValue) {
           foundName = [contact.givenName, contact.familyName].filter { !$0.isEmpty }.joined(
             separator: " ")
           stop.pointee = true

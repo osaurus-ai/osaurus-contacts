@@ -1,4 +1,6 @@
 import Foundation
+import OsaurusPluginABI
+import OsaurusPluginKit
 
 // MARK: - Manifest
 
@@ -8,6 +10,7 @@ let contactsManifestJSON = """
   {
     "plugin_id": "osaurus.contacts",
     "name": "Contacts",
+    "version": "1.0.4",
     "description": "Access and manage contacts on macOS",
     "license": "MIT",
     "authors": ["Dinoki Labs"],
@@ -63,30 +66,6 @@ extension FindContactByNameTool: Tool {}
 
 // MARK: - C ABI surface
 
-// Opaque context
-private typealias osr_plugin_ctx_t = UnsafeMutableRawPointer
-
-// Function pointers
-private typealias osr_free_string_t = @convention(c) (UnsafePointer<CChar>?) -> Void
-private typealias osr_init_t = @convention(c) () -> osr_plugin_ctx_t?
-private typealias osr_destroy_t = @convention(c) (osr_plugin_ctx_t?) -> Void
-private typealias osr_get_manifest_t = @convention(c) (osr_plugin_ctx_t?) -> UnsafePointer<CChar>?
-private typealias osr_invoke_t =
-  @convention(c) (
-    osr_plugin_ctx_t?,
-    UnsafePointer<CChar>?,  // type
-    UnsafePointer<CChar>?,  // id
-    UnsafePointer<CChar>?  // payload
-  ) -> UnsafePointer<CChar>?
-
-private struct osr_plugin_api {
-  var free_string: osr_free_string_t?
-  var `init`: osr_init_t?
-  var destroy: osr_destroy_t?
-  var get_manifest: osr_get_manifest_t?
-  var invoke: osr_invoke_t?
-}
-
 // Context state
 private class PluginContext {
   let manager = ContactsManager()
@@ -101,37 +80,21 @@ private class PluginContext {
   }()
 }
 
-// Helper to return C strings
-private func makeCString(_ s: String) -> UnsafePointer<CChar>? {
-  guard let ptr = strdup(s) else { return nil }
-  return UnsafePointer(ptr)
-}
-
 // API Implementation
-private var api: osr_plugin_api = {
-  var api = osr_plugin_api()
-
-  api.free_string = { ptr in
-    if let p = ptr { free(UnsafeMutableRawPointer(mutating: p)) }
-  }
-
-  api.`init` = {
-    let ctx = PluginContext()
-    return Unmanaged.passRetained(ctx).toOpaque()
-  }
-
-  api.destroy = { ctxPtr in
+private var pluginAPI = PluginEntry.makeAPI(
+  version: OsrABIVersion.v2,
+  init: {
+    Unmanaged.passRetained(PluginContext()).toOpaque()
+  },
+  destroy: { ctxPtr in
     guard let ctxPtr = ctxPtr else { return }
     Unmanaged<PluginContext>.fromOpaque(ctxPtr).release()
-  }
-
-  api.get_manifest = { ctxPtr in
-    guard let ctxPtr = ctxPtr else { return nil }
-    _ = Unmanaged<PluginContext>.fromOpaque(ctxPtr).takeUnretainedValue()
-    return makeCString(contactsManifestJSON)
-  }
-
-  api.invoke = { ctxPtr, typePtr, idPtr, payloadPtr in
+  },
+  getManifest: { ctxPtr in
+    guard ctxPtr != nil else { return nil }
+    return osrMakeCString(contactsManifestJSON)
+  },
+  invoke: { ctxPtr, typePtr, idPtr, payloadPtr in
     guard let ctxPtr = ctxPtr,
       let typePtr = typePtr,
       let idPtr = idPtr,
@@ -146,18 +109,21 @@ private var api: osr_plugin_api = {
     if type == "tool" {
       if let tool = ctx.tools[id] {
         let result = tool.run(args: payload)
-        return makeCString(result)
+        return osrMakeCString(result)
       }
     }
 
-    return makeCString(
+    return osrMakeCString(
       Envelope.failure(.notFound, "Unknown capability or tool: \(type)/\(id)"))
   }
+)
 
-  return api
-}()
+@_cdecl("osaurus_plugin_entry_v2")
+public func osaurus_plugin_entry_v2(_ host: UnsafeRawPointer?) -> UnsafeRawPointer? {
+  PluginEntry.enterV2(host, api: &pluginAPI)
+}
 
 @_cdecl("osaurus_plugin_entry")
 public func osaurus_plugin_entry() -> UnsafeRawPointer? {
-  return UnsafeRawPointer(&api)
+  PluginEntry.enterV1(api: &pluginAPI)
 }
