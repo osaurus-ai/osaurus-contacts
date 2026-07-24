@@ -17,7 +17,7 @@ final class ContactsTests: XCTestCase {
   func testManifestVersionMatchesRelease() throws {
     let data = try XCTUnwrap(contactsManifestJSON.data(using: .utf8))
     let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-    XCTAssertEqual(root["version"] as? String, "1.0.4")
+    XCTAssertEqual(root["version"] as? String, "1.1.0")
   }
 
   func testEveryToolHasNonEmptyIdAndDescription() throws {
