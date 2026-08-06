@@ -13,6 +13,19 @@ enum Matching {
     return s.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
   }
 
+  /// Normalizes a name for case- and diacritic-insensitive matching.
+  static func normalizeName(_ value: String) -> String {
+    value
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+  }
+
+  static func nameMatches(query: String, candidate: String) -> Bool {
+    let normalizedQuery = normalizeName(query)
+    guard !normalizedQuery.isEmpty else { return false }
+    return normalizeName(candidate).contains(normalizedQuery)
+  }
+
   /// Whether a searched phone number matches a stored one. Both are compared
   /// on digits only. A match requires full equality, or one number being a
   /// suffix of the other where the shorter side has at least
@@ -28,21 +41,4 @@ enum Matching {
     return q.hasSuffix(c) || c.hasSuffix(q)
   }
 
-  /// Builds the name-keyed phone map returned by get_all_numbers while
-  /// preserving contacts whose display names collide: subsequent duplicates
-  /// get a " (2)", " (3)", ... suffix instead of overwriting earlier entries.
-  static func nameKeyedResults(_ entries: [(name: String, phones: [String])]) -> [String: [String]]
-  {
-    var results: [String: [String]] = [:]
-    for entry in entries {
-      var key = entry.name
-      var suffix = 2
-      while results[key] != nil {
-        key = "\(entry.name) (\(suffix))"
-        suffix += 1
-      }
-      results[key] = entry.phones
-    }
-    return results
-  }
 }

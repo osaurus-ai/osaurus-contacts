@@ -24,7 +24,7 @@ final class SDKConformanceTests: XCTestCase {
   }
 
   func testInvokeReturnsCanonicalFailure() throws {
-    // A missing 'name' fails before any Contacts framework/TCC access,
+    // A missing 'query' fails before any Contacts framework/TCC access,
     // exercised through the real ABI invoke callback.
     let entry = try XCTUnwrap(osaurus_plugin_entry_v2(nil))
     let api = entry.assumingMemoryBound(to: OsrPluginAPI.self).pointee
@@ -32,7 +32,7 @@ final class SDKConformanceTests: XCTestCase {
     defer { api.destroy?(ctx) }
 
     let resultPtr = "tool".withCString { type in
-      "find_number".withCString { id in
+      "find_contacts".withCString { id in
         "{}".withCString { payload in
           api.invoke?(ctx, type, id, payload)
         }

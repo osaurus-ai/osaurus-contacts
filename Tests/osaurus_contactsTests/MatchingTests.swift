@@ -51,35 +51,14 @@ final class MatchingTests: XCTestCase {
     XCTAssertFalse(Matching.phoneMatches(query: "4155551234", candidate: ""))
   }
 
-  // MARK: - Duplicate display names
+  // MARK: - Name matching
 
-  func testDuplicateNamesArePreservedWithDisambiguatedKeys() {
-    // Regression: contacts with the same display name used to overwrite each
-    // other in the dictionary result.
-    let results = Matching.nameKeyedResults([
-      (name: "John Smith", phones: ["111"]),
-      (name: "John Smith", phones: ["222"]),
-      (name: "Jane Doe", phones: ["333"]),
-      (name: "John Smith", phones: ["444"]),
-    ])
-
-    XCTAssertEqual(results.count, 4)
-    XCTAssertEqual(results["John Smith"], ["111"])
-    XCTAssertEqual(results["John Smith (2)"], ["222"])
-    XCTAssertEqual(results["John Smith (3)"], ["444"])
-    XCTAssertEqual(results["Jane Doe"], ["333"])
+  func testNameMatchIsCaseAndDiacriticInsensitive() {
+    XCTAssertTrue(Matching.nameMatches(query: "jose", candidate: "José Alvarez"))
+    XCTAssertTrue(Matching.nameMatches(query: "SMITH", candidate: "Jane Smith"))
   }
 
-  func testDisambiguationAvoidsCollidingWithRealNames() {
-    let results = Matching.nameKeyedResults([
-      (name: "John Smith", phones: ["111"]),
-      (name: "John Smith (2)", phones: ["222"]),
-      (name: "John Smith", phones: ["333"]),
-    ])
-
-    XCTAssertEqual(results.count, 3)
-    XCTAssertEqual(results["John Smith"], ["111"])
-    XCTAssertEqual(results["John Smith (2)"], ["222"])
-    XCTAssertEqual(results["John Smith (3)"], ["333"])
+  func testEmptyNameQueryNeverMatches() {
+    XCTAssertFalse(Matching.nameMatches(query: "  ", candidate: "Jane Smith"))
   }
 }

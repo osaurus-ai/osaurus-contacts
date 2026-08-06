@@ -8,7 +8,10 @@ let package = Package(
         .library(name: "osaurus-contacts", type: .dynamic, targets: ["osaurus_contacts"])
     ],
     dependencies: [
-        .package(url: "https://github.com/osaurus-ai/osaurus-plugin-sdk.git", exact: "1.0.0")
+        .package(
+            url: "https://github.com/osaurus-ai/osaurus-plugin-sdk.git",
+            revision: "21b4e133b365ff73c25d4a9db60d207c1888a6ab"
+        )
     ],
     targets: [
         .target(

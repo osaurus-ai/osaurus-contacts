@@ -12,13 +12,33 @@ struct LabeledValue: Codable {
   let value: String
 }
 
-struct ContactInfo: Codable {
+struct ContactRecord: Codable, Equatable {
+  let identifier: String
   let name: String
   let phoneNumbers: [LabeledValue]
   let emails: [LabeledValue]
+
+  enum CodingKeys: String, CodingKey {
+    case identifier
+    case name
+    case phoneNumbers = "phone_numbers"
+    case emails
+  }
 }
 
-class ContactsManager {
+extension LabeledValue: Equatable {}
+
+enum ContactMatchField: String {
+  case name
+  case phone
+}
+
+protocol ContactsManaging {
+  func listContacts() throws -> [ContactRecord]
+  func findContacts(query: String, matchBy: ContactMatchField) throws -> [ContactRecord]
+}
+
+final class ContactsManager: ContactsManaging {
   private let store = CNContactStore()
 
   // Helper to normalize labels (e.g., "_$!<Home>!$_" -> "home")
@@ -61,135 +81,55 @@ class ContactsManager {
     }
   }
 
-  func getAllNumbers(limit: Int = 1000) throws -> [String: [String]] {
+  func listContacts() throws -> [ContactRecord] {
     try ensureAccess()
 
-    var entries: [(name: String, phones: [String])] = []
-
-    let keys =
-      [CNContactGivenNameKey, CNContactFamilyNameKey, CNContactPhoneNumbersKey] as [CNKeyDescriptor]
+    let keys: [CNKeyDescriptor] = [
+      CNContactIdentifierKey as CNKeyDescriptor,
+      CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
+      CNContactOrganizationNameKey as CNKeyDescriptor,
+      CNContactPhoneNumbersKey as CNKeyDescriptor,
+      CNContactEmailAddressesKey as CNKeyDescriptor,
+    ]
     let request = CNContactFetchRequest(keysToFetch: keys)
+    var contacts: [ContactRecord] = []
 
-    try store.enumerateContacts(with: request) { contact, stop in
-      if entries.count >= limit {
-        stop.pointee = true
-        return
-      }
-
-      let name = [contact.givenName, contact.familyName].filter { !$0.isEmpty }.joined(
-        separator: " ")
-      let phones = contact.phoneNumbers.map { $0.value.stringValue }
-
-      if !name.isEmpty && !phones.isEmpty {
-        entries.append((name: name, phones: phones))
-      }
+    try store.enumerateContacts(with: request) { contact, _ in
+      contacts.append(self.record(from: contact))
     }
 
-    return Matching.nameKeyedResults(entries)
+    return contacts.sorted { $0.identifier < $1.identifier }
   }
 
-  func findNumber(name: String) throws -> [String] {
-    let contacts = try findContactByName(name: name)
-    return contacts.flatMap { $0.phoneNumbers.map { $0.value } }
-  }
-
-  func findContactByName(name: String) throws -> [ContactInfo] {
-    try ensureAccess()
-
-    let keys = [
-      CNContactGivenNameKey, CNContactFamilyNameKey, CNContactPhoneNumbersKey,
-      CNContactEmailAddressesKey,
-    ] as [CNKeyDescriptor]
-
-    // exact match using predicate
-    let predicate = CNContact.predicateForContacts(matchingName: name)
-    var results: [ContactInfo] = []
-    var exactSearchError: Error? = nil
-
-    do {
-      let contacts = try store.unifiedContacts(matching: predicate, keysToFetch: keys)
-      for contact in contacts {
-        let fullName = [contact.givenName, contact.familyName].filter { !$0.isEmpty }.joined(
-          separator: " ")
-        results.append(
-          ContactInfo(
-            name: fullName,
-            phoneNumbers: contact.phoneNumbers.map {
-              LabeledValue(label: self.normalizeLabel($0.label), value: $0.value.stringValue)
-            },
-            emails: contact.emailAddresses.map {
-              LabeledValue(label: self.normalizeLabel($0.label), value: $0.value as String)
-            }
-          ))
-      }
-    } catch {
-      // Remember the error; if the fallback below also fails, both are reported.
-      exactSearchError = error
-    }
-
-    if !results.isEmpty {
-      return results
-    }
-
-    // fuzzy search (iterate all)
-    let searchName = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-    let request = CNContactFetchRequest(keysToFetch: keys)
-
-    do {
-      try store.enumerateContacts(with: request) { contact, _ in
-        let fullName = [contact.givenName, contact.familyName].filter { !$0.isEmpty }.joined(
-          separator: " ")
-        let lowerFullName = fullName.lowercased()
-
-        if lowerFullName.contains(searchName) || searchName.contains(lowerFullName) {
-          results.append(
-            ContactInfo(
-              name: fullName,
-              phoneNumbers: contact.phoneNumbers.map {
-                LabeledValue(label: self.normalizeLabel($0.label), value: $0.value.stringValue)
-              },
-              emails: contact.emailAddresses.map {
-                LabeledValue(label: self.normalizeLabel($0.label), value: $0.value as String)
-              }
-            ))
-        }
-      }
-    } catch {
-      if let exactSearchError {
-        throw ContactsError.searchFailed(
-          "Exact search failed: \(exactSearchError.localizedDescription); fallback search failed: \(error.localizedDescription)"
-        )
-      }
-      throw error
-    }
-
-    return results
-  }
-
-  func findContactByPhone(phone: String) throws -> String? {
-    try ensureAccess()
-
-    if Matching.normalizeDigits(phone).isEmpty { return nil }
-
-    let keys =
-      [CNContactGivenNameKey, CNContactFamilyNameKey, CNContactPhoneNumbersKey] as [CNKeyDescriptor]
-    let request = CNContactFetchRequest(keysToFetch: keys)
-
-    var foundName: String?
-
-    try store.enumerateContacts(with: request) { contact, stop in
-      for phoneNumber in contact.phoneNumbers {
-        // Digits-only comparison requiring full equality or a >=7 digit suffix
-        // match, so short numbers cannot match by raw substring containment.
-        if Matching.phoneMatches(query: phone, candidate: phoneNumber.value.stringValue) {
-          foundName = [contact.givenName, contact.familyName].filter { !$0.isEmpty }.joined(
-            separator: " ")
-          stop.pointee = true
-          return
+  func findContacts(query: String, matchBy: ContactMatchField) throws -> [ContactRecord] {
+    let contacts = try listContacts()
+    switch matchBy {
+    case .name:
+      return contacts.filter { Matching.nameMatches(query: query, candidate: $0.name) }
+    case .phone:
+      return contacts.filter {
+        $0.phoneNumbers.contains {
+          Matching.phoneMatches(query: query, candidate: $0.value)
         }
       }
     }
+  }
 
-    return foundName
+  private func record(from contact: CNContact) -> ContactRecord {
+    let formattedName =
+      CNContactFormatter.string(from: contact, style: .fullName)?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let name = formattedName.isEmpty ? contact.organizationName : formattedName
+
+    return ContactRecord(
+      identifier: contact.identifier,
+      name: name,
+      phoneNumbers: contact.phoneNumbers.map {
+        LabeledValue(label: normalizeLabel($0.label), value: $0.value.stringValue)
+      },
+      emails: contact.emailAddresses.map {
+        LabeledValue(label: normalizeLabel($0.label), value: $0.value as String)
+      }
+    )
   }
 }
