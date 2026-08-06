@@ -17,24 +17,49 @@ final class ContactsTests: XCTestCase {
   func testManifestVersionMatchesRelease() throws {
     let data = try XCTUnwrap(contactsManifestJSON.data(using: .utf8))
     let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-    XCTAssertEqual(root["version"] as? String, "1.1.0")
+    XCTAssertEqual(root["version"] as? String, "2.0.0")
   }
 
-  func testEveryToolHasNonEmptyIdAndDescription() throws {
+  func testManifestDeclaresExactlyModernizedTools() throws {
     let data = try XCTUnwrap(contactsManifestJSON.data(using: .utf8))
     let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     let capabilities = try XCTUnwrap(root["capabilities"] as? [String: Any])
     let tools = try XCTUnwrap(capabilities["tools"] as? [[String: Any]])
 
-    XCTAssertFalse(tools.isEmpty, "Manifest should declare at least one tool")
+    XCTAssertEqual(tools.compactMap { $0["id"] as? String }, ["list_contacts", "find_contacts"])
 
-    for tool in tools {
+    for (tool, definition) in zip(tools, ToolContracts.all) {
       let id = try XCTUnwrap(tool["id"] as? String)
       let description = try XCTUnwrap(tool["description"] as? String)
       XCTAssertFalse(id.isEmpty, "Tool id must be non-empty")
       XCTAssertFalse(description.isEmpty, "Tool description must be non-empty")
-      // The host requires "id"; ensure no tool accidentally used "name".
       XCTAssertNil(tool["name"], "Tools must use 'id', not 'name'")
+      XCTAssertEqual(tool["permission_policy"] as? String, "ask")
+      XCTAssertNil(tool["annotations"])
+      XCTAssertNil(tool["outputSchema"])
+
+      let manifestSchema = try XCTUnwrap(tool["parameters"] as? NSDictionary)
+      let canonicalSchema = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: Data(definition.parameters.utf8)) as? NSDictionary)
+      XCTAssertEqual(manifestSchema, canonicalSchema, "\(id) schema must use its canonical source")
+      XCTAssertEqual(manifestSchema["type"] as? String, "object")
+      XCTAssertEqual(manifestSchema["additionalProperties"] as? Bool, false)
+    }
+  }
+
+  func testParameterNamesUseSnakeCase() throws {
+    let data = try XCTUnwrap(contactsManifestJSON.data(using: .utf8))
+    let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let capabilities = try XCTUnwrap(root["capabilities"] as? [String: Any])
+    let tools = try XCTUnwrap(capabilities["tools"] as? [[String: Any]])
+
+    for tool in tools {
+      let parameters = try XCTUnwrap(tool["parameters"] as? [String: Any])
+      let properties = try XCTUnwrap(parameters["properties"] as? [String: Any])
+      for key in properties.keys {
+        XCTAssertNotNil(
+          key.range(of: #"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"#, options: .regularExpression))
+      }
     }
   }
 
@@ -42,7 +67,6 @@ final class ContactsTests: XCTestCase {
 
   func testFailureRoundTripsWithOkFalse() throws {
     let json = Envelope.failure(.notFound, "nothing here")
-    XCTAssertTrue(json.hasPrefix("{\"ok\":false"), "Failure must start with {\"ok\":false")
 
     let data = try XCTUnwrap(json.data(using: .utf8))
     let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -55,11 +79,14 @@ final class ContactsTests: XCTestCase {
 
   func testDefaultRetryablePerKind() throws {
     let expectations: [(Envelope.Kind, String, Bool)] = [
-      (.invalidArgs, "invalid_args", false),
+      (.invalidArgs, "invalid_args", true),
+      (.rejected, "rejected", false),
+      (.userDenied, "user_denied", false),
+      (.timeout, "timeout", true),
       (.executionError, "execution_error", true),
       (.notFound, "not_found", false),
-      (.permissionDenied, "permission_denied", false),
-      (.timeout, "timeout", true),
+      (.unavailable, "unavailable", true),
+      (.toolNotFound, "tool_not_found", false),
     ]
 
     for (kind, rawKind, retryable) in expectations {

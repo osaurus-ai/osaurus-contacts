@@ -1,183 +1,383 @@
 import Foundation
 import OsaurusPluginKit
 
-// Maps a thrown error to a canonical failure envelope.
-// Contacts permission failures are non-retryable `permission_denied`;
-// permission-prompt timeouts are `timeout`; everything else is treated as a
-// retryable `execution_error`.
-func contactsFailure(_ error: Error) -> String {
+struct ToolDefinition {
+  let id: String
+  let description: String
+  let parameters: String
+}
+
+enum ToolContracts {
+  static let listContacts = ToolDefinition(
+    id: "list_contacts",
+    description: "List contacts with stable identifiers and labeled phone and email values",
+    parameters: """
+      {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of contacts to return"
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Opaque cursor returned by a previous list_contacts call"
+          }
+        },
+        "required": ["limit"],
+        "additionalProperties": false
+      }
+      """
+  )
+
+  static let findContacts = ToolDefinition(
+    id: "find_contacts",
+    description: "Find contacts by name or phone number",
+    parameters: """
+      {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Name or phone number to search for"
+          },
+          "match_by": {
+            "type": "string",
+            "enum": ["name", "phone"],
+            "description": "Contact field to match"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Maximum number of matching contacts to return"
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Opaque cursor returned by the same find_contacts query"
+          }
+        },
+        "required": ["query", "match_by", "limit"],
+        "additionalProperties": false
+      }
+      """
+  )
+
+  static let all = [listContacts, findContacts]
+}
+
+struct ContactsPage: Codable, Equatable {
+  let contacts: [ContactRecord]
+  let returned: Int
+  let total: Int
+  let truncated: Bool
+  let nextCursor: String?
+
+  enum CodingKeys: String, CodingKey {
+    case contacts
+    case returned
+    case total
+    case truncated
+    case nextCursor = "next_cursor"
+  }
+}
+
+private struct CursorPayload: Codable, Equatable {
+  let version: Int
+  let tool: String
+  let matchBy: String?
+  let query: String?
+  let offset: Int
+
+  enum CodingKeys: String, CodingKey {
+    case version
+    case tool
+    case matchBy = "match_by"
+    case query
+    case offset
+  }
+}
+
+private enum ContactCursor {
+  static func encode(_ payload: CursorPayload) -> String {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let data = try! encoder.encode(payload)
+    return data.base64EncodedString()
+      .replacingOccurrences(of: "+", with: "-")
+      .replacingOccurrences(of: "/", with: "_")
+      .replacingOccurrences(of: "=", with: "")
+  }
+
+  static func decode(_ value: String?, expected: CursorPayload, tool: String) throws -> Int {
+    guard let value else { return 0 }
+    var base64 = value
+      .replacingOccurrences(of: "-", with: "+")
+      .replacingOccurrences(of: "_", with: "/")
+    base64 += String(repeating: "=", count: (4 - base64.count % 4) % 4)
+
+    guard let data = Data(base64Encoded: base64),
+      let payload = try? JSONDecoder().decode(CursorPayload.self, from: data),
+      payload.version == expected.version,
+      payload.tool == expected.tool,
+      payload.matchBy == expected.matchBy,
+      payload.query == expected.query,
+      payload.offset >= 0
+    else {
+      throw EnvelopeFailure(
+        .invalidArgs,
+        "cursor is invalid or belongs to a different request",
+        field: "cursor",
+        expected: "a cursor returned by this same tool and query",
+        tool: tool
+      )
+    }
+    return payload.offset
+  }
+}
+
+func contactsFailure(_ error: Error, tool: String) -> String {
   switch error {
   case let ContactsError.permissionDenied(message):
-    return Envelope.failure(.permissionDenied, message)
+    return Envelope.failure(.userDenied, message, tool: tool)
   case let ContactsError.permissionTimeout(message):
-    return Envelope.failure(.timeout, message)
+    return Envelope.failure(.timeout, message, tool: tool)
   case let ContactsError.searchFailed(message):
-    return Envelope.failure(.executionError, message)
+    return Envelope.failure(.executionError, message, tool: tool)
+  case let failure as EnvelopeFailure:
+    return Envelope.failure(
+      failure.kind,
+      failure.message,
+      retryable: failure.retryable,
+      field: failure.field,
+      expected: failure.expected,
+      tool: failure.tool ?? tool,
+      dataJSON: failure.dataJSON
+    )
   default:
-    return Envelope.failure(.executionError, error.localizedDescription)
+    return Envelope.failure(.executionError, error.localizedDescription, tool: tool)
   }
 }
 
-struct GetAllNumbersTool {
-  let name = "get_all_numbers"
-  let description = "Get all contacts and their phone numbers"
-  let parameters =
-    "{\"type\":\"object\",\"properties\":{\"limit\":{\"type\":\"integer\",\"description\":\"Max number of contacts to return (default 1000)\"}},\"required\":[]}"
+private func strictArguments(_ payload: String, allowed: Set<String>, tool: String) throws
+  -> [String: Any]
+{
+  let args = try ArgValidation.parseObject(payload)
+  let unknown = Set(args.keys).subtracting(allowed).sorted()
+  guard unknown.isEmpty else {
+    throw EnvelopeFailure(
+      .invalidArgs,
+      "Unknown argument\(unknown.count == 1 ? "" : "s"): \(unknown.joined(separator: ", "))",
+      expected: "only declared schema properties",
+      tool: tool
+    )
+  }
+  return args
+}
 
-  let manager: ContactsManager
+private func requiredString(_ args: [String: Any], field: String, tool: String) throws -> String {
+  do {
+    return try ArgValidation.requireString(args, field)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+  } catch let failure as EnvelopeFailure {
+    throw EnvelopeFailure(
+      failure.kind,
+      failure.message,
+      retryable: failure.retryable,
+      field: field,
+      expected: "a non-empty string",
+      tool: tool
+    )
+  }
+}
+
+private func requiredLimit(_ args: [String: Any], tool: String) throws -> Int {
+  guard let raw = args["limit"], !(raw is NSNull) else {
+    throw EnvelopeFailure(
+      .invalidArgs,
+      "Missing required argument: limit",
+      field: "limit",
+      expected: "an integer from 1 through 1000",
+      tool: tool
+    )
+  }
+  guard let number = raw as? NSNumber,
+    CFGetTypeID(number) != CFBooleanGetTypeID()
+  else {
+    throw EnvelopeFailure(
+      .invalidArgs,
+      "limit must be an integer",
+      field: "limit",
+      expected: "an integer from 1 through 1000",
+      tool: tool
+    )
+  }
+  let numericValue = number.doubleValue
+  guard numericValue.isFinite,
+    numericValue.rounded(.towardZero) == numericValue,
+    numericValue >= 1,
+    numericValue <= 1000
+  else {
+    throw EnvelopeFailure(
+      .invalidArgs,
+      "limit must be an integer from 1 through 1000",
+      field: "limit",
+      expected: "an integer from 1 through 1000",
+      tool: tool
+    )
+  }
+  return Int(numericValue)
+}
+
+private func optionalCursor(_ args: [String: Any], tool: String) throws -> String? {
+  guard let raw = args["cursor"] else { return nil }
+  guard let cursor = raw as? String,
+    !cursor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  else {
+    throw EnvelopeFailure(
+      .invalidArgs,
+      "cursor must be a non-empty string",
+      field: "cursor",
+      expected: "an opaque cursor string",
+      tool: tool
+    )
+  }
+  return cursor
+}
+
+private func successPage(
+  tool: String,
+  contacts: [ContactRecord],
+  limit: Int,
+  offset: Int,
+  cursorContext: CursorPayload
+) -> String {
+  let start = min(offset, contacts.count)
+  let end = min(start + limit, contacts.count)
+  let selected = Array(contacts[start..<end])
+  let truncated = end < contacts.count
+  let nextCursor =
+    truncated
+    ? ContactCursor.encode(
+      CursorPayload(
+        version: cursorContext.version,
+        tool: cursorContext.tool,
+        matchBy: cursorContext.matchBy,
+        query: cursorContext.query,
+        offset: end
+      ))
+    : nil
+  let page = ContactsPage(
+    contacts: selected,
+    returned: selected.count,
+    total: contacts.count,
+    truncated: truncated,
+    nextCursor: nextCursor
+  )
+
+  let encoder = JSONEncoder()
+  encoder.outputFormatting = [.sortedKeys]
+  guard let data = try? encoder.encode(page),
+    let json = String(data: data, encoding: .utf8)
+  else {
+    return Envelope.failure(.executionError, "Failed to encode contacts result", tool: tool)
+  }
+  return Envelope.success(tool: tool, rawResult: json)
+}
+
+struct ListContactsTool {
+  let definition = ToolContracts.listContacts
+  let manager: any ContactsManaging
+
+  var name: String { definition.id }
+  var description: String { definition.description }
+  var parameters: String { definition.parameters }
 
   func run(args: String) -> String {
-    struct Args: Decodable {
-      let limit: Int?
-    }
-
-    // An empty payload means "no arguments"; anything else must be valid JSON
-    // instead of being silently treated as defaults.
-    var requestedLimit: Int? = nil
-    if !args.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      guard let data = args.data(using: .utf8),
-        let input = try? JSONDecoder().decode(Args.self, from: data)
-      else {
-        return Envelope.failure(.invalidArgs, "Invalid arguments: expected a JSON object")
-      }
-      requestedLimit = input.limit
-    }
-
-    let limit = requestedLimit ?? 1000
-    guard limit > 0 else {
-      return Envelope.failure(.invalidArgs, "limit must be a positive integer, got \(limit)")
-    }
-
     do {
-      let contacts = try manager.getAllNumbers(limit: limit)
-      guard let data = try? JSONEncoder().encode(contacts),
-        let json = String(data: data, encoding: .utf8)
-      else {
-        return Envelope.failure(.executionError, "Failed to encode contacts result")
-      }
-      return json
+      let input = try strictArguments(
+        args, allowed: ["limit", "cursor"], tool: name)
+      let limit = try requiredLimit(input, tool: name)
+      let cursor = try optionalCursor(input, tool: name)
+      let context = CursorPayload(
+        version: 1, tool: name, matchBy: nil, query: nil, offset: 0)
+      let offset = try ContactCursor.decode(cursor, expected: context, tool: name)
+      return successPage(
+        tool: name,
+        contacts: try manager.listContacts(),
+        limit: limit,
+        offset: offset,
+        cursorContext: context
+      )
     } catch {
-      return contactsFailure(error)
+      return contactsFailure(error, tool: name)
     }
   }
 }
 
-struct FindNumberTool {
-  let name = "find_number"
-  let description = "Find phone numbers for a contact by name"
-  let parameters =
-    "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Name to search for\"}},\"required\":[\"name\"]}"
+struct FindContactsTool {
+  let definition = ToolContracts.findContacts
+  let manager: any ContactsManaging
 
-  let manager: ContactsManager
-
-  func run(args: String) -> String {
-    struct Args: Decodable {
-      let name: String
-    }
-
-    guard let data = args.data(using: .utf8),
-      let input = try? JSONDecoder().decode(Args.self, from: data)
-    else {
-      return Envelope.failure(.invalidArgs, "Missing or invalid 'name' argument")
-    }
-
-    guard !input.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-      return Envelope.failure(.invalidArgs, "'name' must not be empty")
-    }
-
-    do {
-      let numbers = try manager.findNumber(name: input.name)
-      if numbers.isEmpty {
-        return Envelope.failure(.notFound, "No phone numbers found for '\(input.name)'")
-      }
-      guard let data = try? JSONEncoder().encode(numbers),
-        let json = String(data: data, encoding: .utf8)
-      else {
-        return Envelope.failure(.executionError, "Failed to encode phone numbers result")
-      }
-      return json
-    } catch {
-      return contactsFailure(error)
-    }
-  }
-}
-
-struct FindContactByPhoneTool {
-  let name = "find_contact_by_phone"
-  let description = "Find a contact name by their phone number"
-  let parameters =
-    "{\"type\":\"object\",\"properties\":{\"phoneNumber\":{\"type\":\"string\",\"description\":\"Phone number to search for\"}},\"required\":[\"phoneNumber\"]}"
-
-  let manager: ContactsManager
+  var name: String { definition.id }
+  var description: String { definition.description }
+  var parameters: String { definition.parameters }
 
   func run(args: String) -> String {
-    struct Args: Decodable {
-      let phoneNumber: String
-    }
-
-    guard let data = args.data(using: .utf8),
-      let input = try? JSONDecoder().decode(Args.self, from: data)
-    else {
-      return Envelope.failure(.invalidArgs, "Missing or invalid 'phoneNumber' argument")
-    }
-
-    guard !Matching.normalizeDigits(input.phoneNumber).isEmpty else {
-      return Envelope.failure(.invalidArgs, "'phoneNumber' must contain at least one digit")
-    }
-
     do {
-      guard let name = try manager.findContactByPhone(phone: input.phoneNumber) else {
-        return Envelope.failure(.notFound, "No contact found for phone number '\(input.phoneNumber)'")
+      let input = try strictArguments(
+        args, allowed: ["query", "match_by", "limit", "cursor"], tool: name)
+      let query = try requiredString(input, field: "query", tool: name)
+      let matchByValue = try requiredString(input, field: "match_by", tool: name)
+      do {
+        _ = try ArgValidation.enumValue(
+          matchByValue, field: "match_by", allowed: ["name", "phone"])
+      } catch let failure as EnvelopeFailure {
+        throw EnvelopeFailure(
+          failure.kind,
+          failure.message,
+          retryable: failure.retryable,
+          field: "match_by",
+          expected: "name or phone",
+          tool: name
+        )
       }
-      let result = ["name": name]
-      guard let data = try? JSONEncoder().encode(result),
-        let json = String(data: data, encoding: .utf8)
-      else {
-        return Envelope.failure(.executionError, "Failed to encode contact result")
+      let matchBy = ContactMatchField(rawValue: matchByValue)!
+      if matchBy == .phone && Matching.normalizeDigits(query).isEmpty {
+        throw EnvelopeFailure(
+          .invalidArgs,
+          "query must contain at least one digit when match_by is phone",
+          field: "query",
+          expected: "a phone number containing digits",
+          tool: name
+        )
       }
-      return json
+      let limit = try requiredLimit(input, tool: name)
+      let cursor = try optionalCursor(input, tool: name)
+      let normalizedQuery =
+        matchBy == .phone ? Matching.normalizeDigits(query) : Matching.normalizeName(query)
+      let context = CursorPayload(
+        version: 1,
+        tool: name,
+        matchBy: matchBy.rawValue,
+        query: normalizedQuery,
+        offset: 0
+      )
+      let offset = try ContactCursor.decode(cursor, expected: context, tool: name)
+      return successPage(
+        tool: name,
+        contacts: try manager.findContacts(query: query, matchBy: matchBy),
+        limit: limit,
+        offset: offset,
+        cursorContext: context
+      )
     } catch {
-      return contactsFailure(error)
-    }
-  }
-}
-
-struct FindContactByNameTool {
-  let name = "find_contact_by_name"
-  let description = "Find full contact details (phone, email) for a contact by name"
-  let parameters =
-    "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"description\":\"Name to search for\"}},\"required\":[\"name\"]}"
-
-  let manager: ContactsManager
-
-  func run(args: String) -> String {
-    struct Args: Decodable {
-      let name: String
-    }
-
-    guard let data = args.data(using: .utf8),
-      let input = try? JSONDecoder().decode(Args.self, from: data)
-    else {
-      return Envelope.failure(.invalidArgs, "Missing or invalid 'name' argument")
-    }
-
-    guard !input.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-      return Envelope.failure(.invalidArgs, "'name' must not be empty")
-    }
-
-    do {
-      let contacts = try manager.findContactByName(name: input.name)
-      if contacts.isEmpty {
-        return Envelope.failure(.notFound, "No contact found for '\(input.name)'")
-      }
-      guard let data = try? JSONEncoder().encode(contacts),
-        let json = String(data: data, encoding: .utf8)
-      else {
-        return Envelope.failure(.executionError, "Failed to encode contacts result")
-      }
-      return json
-    } catch {
-      return contactsFailure(error)
+      return contactsFailure(error, tool: name)
     }
   }
 }

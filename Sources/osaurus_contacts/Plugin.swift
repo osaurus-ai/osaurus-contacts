@@ -4,52 +4,33 @@ import OsaurusPluginKit
 
 // MARK: - Manifest
 
-// File-scope manifest literal. Tool entries use `"id"` (the host-required key)
-// and must stay in sync with the tools registered in `PluginContext`.
-let contactsManifestJSON = """
-  {
+private func makeContactsManifestJSON() -> String {
+  let tools: [[String: Any]] = ToolContracts.all.map { definition in
+    let parameters = try! JSONSerialization.jsonObject(with: Data(definition.parameters.utf8))
+    return [
+      "id": definition.id,
+      "description": definition.description,
+      "parameters": parameters,
+      "requirements": ["contacts"],
+      "permission_policy": "ask",
+    ]
+  }
+  let manifest: [String: Any] = [
     "plugin_id": "osaurus.contacts",
     "name": "Contacts",
-    "version": "1.1.0",
-    "description": "Access and manage contacts on macOS",
+    "version": "2.0.0",
+    "description": "Read contacts on macOS",
     "license": "MIT",
     "authors": ["Dinoki Labs"],
     "min_macos": "13.0",
     "min_osaurus": "0.5.0",
-    "capabilities": {
-      "tools": [
-        {
-          "id": "find_contact_by_name",
-          "description": "Find full contact details (phone, email) for a contact by name",
-          "parameters": {"type":"object","properties":{"name":{"type":"string","description":"Name to search for"}},"required":["name"]},
-          "requirements": ["contacts"],
-          "permission_policy": "ask"
-        },
-        {
-          "id": "find_contact_by_phone",
-          "description": "Find a contact name by their phone number",
-          "parameters": {"type":"object","properties":{"phoneNumber":{"type":"string","description":"Phone number to search for"}},"required":["phoneNumber"]},
-          "requirements": ["contacts"],
-          "permission_policy": "ask"
-        },
-        {
-          "id": "find_number",
-          "description": "Find phone numbers for a contact by name",
-          "parameters": {"type":"object","properties":{"name":{"type":"string","description":"Name to search for"}},"required":["name"]},
-          "requirements": ["contacts"],
-          "permission_policy": "ask"
-        },
-        {
-          "id": "get_all_numbers",
-          "description": "Get all contacts and their phone numbers",
-          "parameters": {"type":"object","properties":{"limit":{"type":"integer","description":"Max number of contacts to return (default 1000)"}},"required":[]},
-          "requirements": ["contacts"],
-          "permission_policy": "ask"
-        }
-      ]
-    }
-  }
-  """
+    "capabilities": ["tools": tools],
+  ]
+  let data = try! JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
+  return String(data: data, encoding: .utf8)!
+}
+
+let contactsManifestJSON = makeContactsManifestJSON()
 
 // MARK: - Protocol
 protocol Tool {
@@ -59,10 +40,8 @@ protocol Tool {
   func run(args: String) -> String
 }
 
-extension GetAllNumbersTool: Tool {}
-extension FindNumberTool: Tool {}
-extension FindContactByPhoneTool: Tool {}
-extension FindContactByNameTool: Tool {}
+extension ListContactsTool: Tool {}
+extension FindContactsTool: Tool {}
 
 // MARK: - C ABI surface
 
@@ -71,10 +50,8 @@ private class PluginContext {
   let manager = ContactsManager()
   lazy var tools: [String: any Tool] = {
     let list: [any Tool] = [
-      GetAllNumbersTool(manager: manager),
-      FindNumberTool(manager: manager),
-      FindContactByPhoneTool(manager: manager),
-      FindContactByNameTool(manager: manager),
+      ListContactsTool(manager: manager),
+      FindContactsTool(manager: manager),
     ]
     return Dictionary(uniqueKeysWithValues: list.map { ($0.name, $0) })
   }()
@@ -114,7 +91,11 @@ private var pluginAPI = PluginEntry.makeAPI(
     }
 
     return osrMakeCString(
-      Envelope.failure(.notFound, "Unknown capability or tool: \(type)/\(id)"))
+      Envelope.failure(
+        .toolNotFound,
+        "Unknown capability or tool: \(type)/\(id)",
+        tool: id
+      ))
   }
 )
 

@@ -1,34 +1,38 @@
-# osaurus-contacts
+# osaurus-contacts 2.0
 
-An Osaurus plugin for managing Contacts on macOS.
+An Osaurus plugin for reading macOS Contacts through a small, privacy-sensitive tool surface.
 
 ## Tools
 
-- `get_all_numbers`: Get all contacts and their phone numbers
-- `find_number`: Find phone numbers for a contact by name
-- `find_contact_by_name`: Find full contact details (phone, email) for a contact by name
-- `find_contact_by_phone`: Find a contact name by their phone number
+- `list_contacts(limit, cursor?)`: List contacts with stable identifiers and labeled phone/email values.
+- `find_contacts(query, match_by, limit, cursor?)`: Find contacts by `name` or `phone`.
+
+Both tools return a canonical success envelope containing `contacts`, `returned`, `total`,
+`truncated`, and (when another page exists) `next_cursor`. An empty match is a successful
+result with an empty `contacts` array.
 
 ## Development
 
 1. Build:
    ```bash
    swift build -c release
-   cp .build/release/libosaurus-contacts.dylib ./libosaurus-contacts.dylib
    ```
 2. Package (for distribution):
    ```bash
-   osaurus tools package osaurus.contacts 0.1.0
+   osaurus tools package osaurus.contacts 2.0.0
    ```
-   This creates `osaurus.contacts-0.1.0.zip`.
+   This creates `osaurus.contacts-2.0.0.zip`.
 3. Install locally:
    ```bash
-   osaurus tools install ./osaurus.contacts-0.1.0.zip
+   osaurus tools install ./osaurus.contacts-2.0.0.zip
    ```
 
 ## Permissions
 
-This plugin requires access to your Contacts. On macOS, you will be prompted to grant access to the host application (e.g. Terminal, osaurus CLI, or the app using the plugin) upon the first request.
+Every tool keeps `permission_policy: ask` because contact details are sensitive. macOS will
+also prompt the host application for Contacts access on first use.
+
+See [MIGRATION-2.0.md](MIGRATION-2.0.md) for breaking changes from 1.x.
 
 ## Credits
 
